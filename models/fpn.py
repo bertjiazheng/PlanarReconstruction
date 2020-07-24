@@ -41,9 +41,9 @@ class ResNet(nn.Module):
         return x1, x2, x3, x4, x5
 
 
-class Baseline(nn.Module):
+class FPN(nn.Module):
     def __init__(self, cfg):
-        super(Baseline, self).__init__()
+        super(FPN, self).__init__()
 
         orig_resnet = resnet.__dict__[cfg.arch](pretrained=cfg.pretrained)
         self.backbone = ResNet(orig_resnet)
@@ -73,10 +73,6 @@ class Baseline(nn.Module):
         self.pred_prob = nn.Conv2d(channel, 1, (1, 1), padding=0)
         # embedding
         self.embedding_conv = nn.Conv2d(channel, 2, (1, 1), padding=0)
-        # depth prediction
-        self.pred_depth = nn.Conv2d(channel, 1, (1, 1), padding=0)
-        # surface normal prediction
-        self.pred_surface_normal = nn.Conv2d(channel, 3, (1, 1), padding=0)
         # surface plane parameters
         self.pred_param = nn.Conv2d(channel, 3, (1, 1), padding=0)
 
@@ -105,8 +101,6 @@ class Baseline(nn.Module):
         # output
         prob = self.pred_prob(p0)
         embedding = self.embedding_conv(p0)
-        depth = self.pred_depth(p0)
-        surface_normal = self.pred_surface_normal(p0)
         param = self.pred_param(p0)
 
-        return prob, embedding, depth, surface_normal, param
+        return prob, embedding, param

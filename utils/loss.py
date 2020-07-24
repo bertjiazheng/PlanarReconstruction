@@ -1,5 +1,7 @@
 import numpy as np
+
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
@@ -37,17 +39,16 @@ def class_balanced_cross_entropy_loss(output, label, size_average=True, batch_av
     return final_loss
 
 
-def hinge_embedding_loss(embedding, num_planes, segmentation, device, t_pull=0.5, t_push=1.5):
-    b, c, h, w = embedding.size()
-    assert(b == 1)
+def hinge_embedding_loss(embedding, instance, num_planes, t_pull=0.5, t_push=1.5):
+    c, h, w = embedding.size()
 
-    num_planes = num_planes.numpy()[0]
-    embedding = embedding[0]
-    segmentation = segmentation[0]
+    device = embedding.device
+
     embeddings = []
     # select embedding with segmentation
     for i in range(num_planes):
-        feature = torch.transpose(torch.masked_select(embedding, segmentation[i, :, :].view(1, h, w)).view(c, -1), 0, 1)
+        feature = torch.transpose(
+            torch.masked_select(embedding, instance[i].view(1, h, w)).view(c, -1), 0, 1)
         embeddings.append(feature)
 
     centers = []
@@ -85,7 +86,8 @@ def hinge_embedding_loss(embedding, num_planes, segmentation, device, t_pull=0.5
 
 
 def surface_normal_loss(prediction, surface_normal, valid_region):
-    b, c, h, w = prediction.size()
+    c, h, w = prediction.size()
+
     if valid_region is None:
         valid_predition = torch.transpose(prediction.view(c, -1), 0, 1)
         valid_surface_normal = torch.transpose(surface_normal.view(c, -1), 0, 1)
@@ -95,14 +97,14 @@ def surface_normal_loss(prediction, surface_normal, valid_region):
 
     similarity = torch.nn.functional.cosine_similarity(valid_predition, valid_surface_normal, dim=1)
 
-    loss = torch.mean(1-similarity)
+    loss = torch.mean(1 - similarity)
     mean_angle = torch.mean(torch.acos(torch.clamp(similarity, -1, 1)))
     return loss, mean_angle / np.pi * 180
 
 
 # L1 parameter loss
-def parameter_loss(prediction, param, valid_region):
-    b, c, h, w = prediction.size()
+def plane_parameter_loss(prediction, param, valid_region):
+    c, h, w = prediction.size()
     if valid_region is None:
         valid_predition = torch.transpose(prediction.view(c, -1), 0, 1)
         valid_param = torch.transpose(param.view(c, -1), 0, 1)
@@ -123,8 +125,8 @@ def Q_loss(param, k_inv_dot_xy1, gt_depth):
     :return: error and abs distance
     '''
 
-    b, c, h, w = param.size()
-    assert (b == 1 and c == 3)
+    c, h, w = param.size()
+    assert c == 3
 
     gt_depth = gt_depth.view(1, h*w)
     param = param.view(c, h*w)
@@ -134,7 +136,7 @@ def Q_loss(param, k_inv_dot_xy1, gt_depth):
     infered_depth = infered_depth.view(1, h * w)
 
     # ignore insufficient depth
-    infered_depth = torch.clamp(infered_depth, 1e-4, 10.0)
+    infered_depth = torch.clamp(infered_depth, 1e-4, 1000.0)
 
     # select valid depth
     mask = gt_depth != 0.0
@@ -150,3 +152,70 @@ def Q_loss(param, k_inv_dot_xy1, gt_depth):
     q_diff = torch.abs(torch.sum(valid_param * Q, dim=0, keepdim=True) - 1.)
     loss = torch.mean(q_diff)
     return loss, abs_distance, infered_depth.view(1, 1, h, w)
+
+
+class InstanceParameterLoss(nn.Module):
+    def __init__(self):
+        super(InstanceParameterLoss, self).__init__()
+
+        x, y = np.meshgrid(np.linspace(-1, 1, 512, dtype=np.float), np.linspace(1, -1, 512, dtype=np.float))
+        xyz = np.stack([x, y, -np.ones_like(x)], axis=2)
+        k_inv_dot_xy1 = torch.from_numpy(xyz).reshape(-1, 3).transpose(0, 1).float()
+
+        self.register_buffer('k_inv_dot_xy1', k_inv_dot_xy1)
+
+    def forward(self, segmentation, sample_segmentation, sample_params, valid_region, gt_depth, return_loss=True):
+        """
+        calculate loss of parameters
+        first we combine sample segmentation with sample params to get K plane parameters
+        then we used this parameter to infer plane based Q loss as done in PlaneRecover
+        the loss enforce parameter is consistent with ground truth depth
+
+        :param segmentation: tensor with size (h*w, K)
+        :param sample_segmentation: tensor with size (N, K)
+        :param sample_params: tensor with size (3, N), defined as n / d
+        :param valid_region: tensor with size (1, 1, h, w), indicate planar region
+        :param gt_depth: tensor with size (1, 1, h, w)
+        :param return_loss: bool
+        :return: loss inferred depth with size (1, 1, h, w) corresponded to instance parameters
+        """
+
+        n = sample_segmentation.size(0)
+        h, w = gt_depth.size()
+        assert segmentation.size(1) == sample_segmentation.size(1) and \
+            segmentation.size(0) == h*w and sample_params.size(1) == sample_segmentation.size(0)
+
+        # combine sample segmentation and sample params to get instance parameters
+        if not return_loss:
+            sample_segmentation[sample_segmentation < 0.5] = 0.
+        weight_matrix = F.normalize(sample_segmentation, p=1, dim=0)
+        instance_param = torch.matmul(sample_params, weight_matrix)      # (3, K)
+
+        # infer depth for every pixels and select the one with highest probability
+        depth_maps = 1. / torch.matmul(instance_param.t(), self.k_inv_dot_xy1)     # (K, h*w)
+        _, index = segmentation.max(dim=1)
+        inferred_depth = depth_maps.t()[range(h*w), index].view(1, 1, h, w)
+
+        if not return_loss:
+            return _, inferred_depth, _, instance_param
+
+        # select valid region
+        valid_region = ((valid_region + (gt_depth != 0.0) ) == 2).view(-1)
+        ray = self.k_inv_dot_xy1[:,  valid_region]                       # (3, N)
+        segmentation = segmentation[valid_region]                        # (N, K)
+        valid_depth = gt_depth.view(1, -1)[:, valid_region]              # (1, N)
+        valid_inferred_depth = inferred_depth.view(1, -1)[:, valid_region]
+
+        # Q_loss for every instance
+        Q = valid_depth * ray                                          # (3, N)
+        Q_loss = torch.abs(torch.matmul(instance_param.t(), Q) - 1.)   # (K, N)
+
+        # weight Q_loss with probability
+        weighted_Q_loss = Q_loss * segmentation.t()                    # (K, N)
+
+        loss = torch.sum(torch.mean(weighted_Q_loss, dim=1))
+
+        # abs distance for valid infered depth
+        abs_distance = torch.mean(torch.abs(valid_inferred_depth - valid_depth))
+
+        return loss, inferred_depth, abs_distance, instance_param

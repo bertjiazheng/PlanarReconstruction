@@ -1,9 +1,3 @@
-#ide
-.idea/
-
-# checkpoints
-experiments/
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

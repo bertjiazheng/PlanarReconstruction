@@ -155,13 +155,13 @@ class Bin_Mean_Shift(nn.Module):
         segmentation = F.softmax(distance_matrix, dim=1)
         return segmentation
 
-    def bin_shift(self, prob, embedding, param, gt_seg, bandwidth):
+    def bin_shift(self, prob, embedding, param, mask, bandwidth):
         """
         discrete seeding mean shift in training stage
         :param prob: tensor with size (1, h, w) indicate probability of being plane
         :param embedding: tensor with size (2, h, w)
         :param param: tensor with size (3, h, w)
-        :param gt_seg: ground truth instance segmentation, used for sampling planar embeddings
+        :param mask: ground truth instance segmentation, used for sampling planar embeddings
         :param bandwidth: float
         :return: segmentation results, tensor with size (h*w, K), K is cluster number, row sum to 1
                  sampled segmentation results, tensor with size (N, K) where N is sample size, K is cluster number, row sum to 1
@@ -176,10 +176,10 @@ class Bin_Mean_Shift(nn.Module):
         embedding = embedding.view(c, h*w).t()
         param = param.view(3, h*w)
         prob = prob.view(h*w, 1)
-        seg = gt_seg.view(-1)
+        seg = mask.view(-1)
 
         # random sample planar region data points using ground truth label to speed up training
-        rand_index = np.random.choice(np.arange(0, h * w)[seg.cpu().numpy() != 20], self.sample_num)
+        rand_index = np.random.choice(np.arange(0, h * w)[seg.cpu().numpy() != 0], self.sample_num)
 
         sample_embedding = embedding[rand_index]
         sample_prob = prob[rand_index]
@@ -208,24 +208,24 @@ class Bin_Mean_Shift(nn.Module):
 
         return segmentation, sampled_segmentation, center, sample_prob, seg[rand_index].view(-1, 1), sample_param
 
-    def forward(self, logit, embedding, param, gt_seg):
+    def forward(self, logit, embedding, param, segmentation_gt):
         batch_size, c, h, w = embedding.size()
-        assert(c == 2)
+        assert c == 2
 
         # apply mean shift to every item
-        segmentations, sample_segmentations, centers, sample_probs, sample_gt_segs, sample_params = [], [], [], [], [], []
+        segmentations, sample_segmentations, centers, sample_probs, sample_gt_masks, sample_params = [], [], [], [], [], []
         for b in range(batch_size):
-            segmentation, sample_segmentation, center, prob, sample_seg, sample_param = \
-                self.bin_shift(torch.sigmoid(logit[b]), embedding[b], param[b], gt_seg[b], self.bandwidth)
+            segmentation, sample_segmentation, center, prob, sample_gt_mask, sample_param = \
+                self.bin_shift(torch.sigmoid(logit[b]), embedding[b], param[b], segmentation_gt[b], self.bandwidth)
 
             segmentations.append(segmentation)
             sample_segmentations.append(sample_segmentation)
             centers.append(center)
             sample_probs.append(prob)
-            sample_gt_segs.append(sample_seg)
+            sample_gt_masks.append(sample_gt_mask)
             sample_params.append(sample_param)
 
-        return segmentations, sample_segmentations, sample_params, centers, sample_probs, sample_gt_segs
+        return segmentations, sample_segmentations, sample_params, centers, sample_probs, sample_gt_masks
 
     def test_forward(self, prob, embedding, param, mask_threshold):
         """
