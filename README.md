@@ -1,6 +1,6 @@
-# HoliCity Plane Detection via Associate Embedding
+# HoliCity Plane Detection via Associative Embedding
 
-The repository provides [Associate Embedding](http://openaccess.thecvf.com/content_CVPR_2019/html/Yu_Single-Image_Piece-Wise_Planar_3D_Reconstruction_via_Associative_Embedding_CVPR_2019_paper.html) baseline for [HoliCity Plane Detection Track](https://competitions.codalab.org/competitions/24942) on [Holistic 3D Vision Challenge](https://holistic-3d.github.io/eccv20/challenge.html) at ECCV 2020.
+The repository provides [PlaneAE](http://openaccess.thecvf.com/content_CVPR_2019/html/Yu_Single-Image_Piece-Wise_Planar_3D_Reconstruction_via_Associative_Embedding_CVPR_2019_paper.html) baseline for [HoliCity Plane Detection Track](https://competitions.codalab.org/competitions/24942) on [Holistic 3D Vision Challenge](https://holistic-3d.github.io/eccv20/challenge.html) at ECCV 2020.
 
 ### Training
 Run the following command to train our network:
